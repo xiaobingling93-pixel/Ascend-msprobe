@@ -13,4 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from python.msprobe.core.grad_probe.grad_compare import GradComparator
+__all__ = ['BaseChecker', 'apply_patches']
+
+import python.msprobe.core.config_check.checkers.env_args_checker
+import python.msprobe.core.config_check.checkers.pip_checker
+import python.msprobe.core.config_check.checkers.dataset_checker
+import python.msprobe.core.config_check.checkers.weights_checker
+import python.msprobe.core.config_check.checkers.hyperparameter_checker
+import python.msprobe.core.config_check.checkers.random_checker
+
+from python.msprobe.core.config_check.checkers.base_checker import BaseChecker

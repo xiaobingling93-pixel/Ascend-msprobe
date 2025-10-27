@@ -13,4 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from python.msprobe.core.grad_probe.grad_compare import GradComparator
+import os
+
+try:
+    from python.msprobe.lib import _msprobe_c
+    os.environ["HOOK_TOOL_PATH"] = _msprobe_c.__file__
+except ImportError:
+    from .common.log import logger
+    logger.info("Module _msprobe_c has not been installed. L2-Dump may not work normally.")
+
+
+from python.msprobe.mindspore.common.utils import seed_all, MsprobeStep, MsprobeInitStep

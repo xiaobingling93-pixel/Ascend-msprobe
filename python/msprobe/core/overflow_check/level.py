@@ -13,4 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from python.msprobe.core.grad_probe.grad_compare import GradComparator
+from enum import Enum
+
+
+class OverflowLevel(Enum):
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
