@@ -13,4 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from python.msprobe.core.grad_probe.grad_compare import GradComparator
+from python.msprobe.core.common.exceptions import DistributedNotInitializedError
+from python.msprobe.core.common.log import BaseLogger
+from python.msprobe.pytorch.common.utils import get_rank_if_initialized
+
+
+class PyTorchLogger(BaseLogger):
+    def __init__(self):
+        super().__init__()
+
+    def get_rank(self):
+        try:
+            current_rank = get_rank_if_initialized()
+        except DistributedNotInitializedError:
+            current_rank = None
+        return current_rank
+
+
+logger = PyTorchLogger()

@@ -13,4 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from python.msprobe.core.grad_probe.grad_compare import GradComparator
+from typing import Any
+
+CHECK_FIELDS = ['Max', 'Min', 'Mean']
+OVERFLOW_VALUES = ['inf', '-inf', 'nan']
+
+
+def has_nan_inf(value: Any) -> bool:
+    """检查值是否包含NaN或Inf"""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k in CHECK_FIELDS and str(v).lower() in OVERFLOW_VALUES:
+                return True
+    return False
