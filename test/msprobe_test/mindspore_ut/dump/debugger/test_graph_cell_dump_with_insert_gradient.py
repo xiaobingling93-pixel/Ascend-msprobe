@@ -22,20 +22,19 @@ import mindspore as ms
 import pandas as pd
 import numpy as np
 
-from msprobe.mindspore.dump.dump_processor.cell_dump_process import cell_construct_wrapper
-from msprobe.mindspore.dump.dump_processor.cell_dump_process import check_relation
-from msprobe.mindspore.dump.dump_processor.cell_dump_process import convert_special_values, sort_filenames
-from msprobe.mindspore.dump.dump_processor.cell_dump_process import create_kbyk_json
-from msprobe.mindspore.dump.dump_processor.cell_dump_process import (
+from msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient import cell_construct_wrapper
+from msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient import check_relation
+from msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient import convert_special_values, sort_filenames
+from msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient import create_kbyk_json
+from msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient import (
     process_csv, np_ms_dtype_dict, need_tensordump_in, get_cell_name, get_data_mode,
-    get_parent_cell_name, generate_construct, process_file, is_download_finished,
-    merge_file, process_statistics_step, get_yaml_keys, get_tensordump_mode, str_to_list,
-    set_tensordump_mode, generate_stack_info, parent_cell_types, construct, free_cells, get_construct, dump_task,
-    start, KEY_TOPLAYER, CellDumpConfig, process_step, TIMEOUT
+    generate_construct, process_file, is_download_finished, get_yaml_keys, get_tensordump_mode,
+    set_tensordump_mode, generate_stack_info, dump_task, KEY_TOPLAYER, start, CellDumpConfig, process_statistics,
+    merge_file, process
 )
 
 from msprobe.core.common.const import Const as CoreConst
-from msprobe.mindspore.dump.dump_processor import cell_dump_process
+from msprobe.mindspore.dump.dump_processor import cell_dump_with_insert_gradient
 from msprobe.core.common.log import logger
 
 
@@ -43,25 +42,33 @@ class TestCellDumpStart(unittest.TestCase):
     _set_init_iter = MagicMock()
 
     def setUp(self):
-        self.original_dump_gradient = cell_dump_process.dump_gradient_op_existed
-        self.original_graph_step = cell_dump_process.graph_step_flag
+        self.original_graph_step = cell_dump_with_insert_gradient.graph_step_flag
 
         self.dump_gradient_op_existed = True
         self.graph_step_flag = True
-        cell_dump_process.dump_gradient_op_existed = self.dump_gradient_op_existed
-        cell_dump_process.graph_step_flag = self.graph_step_flag
-        cell_dump_process._set_init_iter = self._set_init_iter
+        cell_dump_with_insert_gradient.dump_gradient_op_existed = self.dump_gradient_op_existed
+        cell_dump_with_insert_gradient.graph_step_flag = self.graph_step_flag
+        cell_dump_with_insert_gradient._set_init_iter = self._set_init_iter
+
+        self.atexit_patch = patch(
+            'msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.atexit.register',
+            MagicMock()
+        )
+        self.mock_atexit_register = self.atexit_patch.start()
 
         self.patch_list = [
-            patch('os.path.exists', return_value=False),
+            patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.os.path.exists',
+                  return_value=False),
             patch('msprobe.core.common.file_utils.remove_path', MagicMock()),
             patch('msprobe.core.common.file_utils.load_yaml', return_value={KEY_TOPLAYER: {"cell1": "(in,out)"}}),
             patch.dict(os.environ, clear=True),
-            patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.create_kbyk_json',
+            patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.create_kbyk_json',
                   return_value="/fake/config.json"),
-            patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.get_yaml_keys', return_value=["Linear"]),
-            patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.set_tensordump_mode', MagicMock()),
-            patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.cell_construct_wrapper',
+            patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.get_yaml_keys',
+                  return_value=["Linear"]),
+            patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.set_tensordump_mode',
+                  MagicMock()),
+            patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.cell_construct_wrapper',
                   return_value=MagicMock()),
             patch.object(logger, 'info', MagicMock()),
             patch.object(logger, 'warning', MagicMock()),
@@ -80,9 +87,10 @@ class TestCellDumpStart(unittest.TestCase):
         self.mock_config.step = 0
 
     def tearDown(self):
-        cell_dump_process.dump_gradient_op_existed = self.original_dump_gradient
-        cell_dump_process.graph_step_flag = self.original_graph_step
+        cell_dump_with_insert_gradient.graph_step_flag = self.original_graph_step
+        self.atexit_patch.stop()
 
+        # 停止原有patch
         for p in self.patch_list:
             p.stop()
 
@@ -90,32 +98,35 @@ class TestCellDumpStart(unittest.TestCase):
         start(self.mock_config)
         self.mocks[4].assert_called()
         self._set_init_iter.assert_called()
+        self.mock_atexit_register.assert_called_once_with(process_statistics, dump_path="/fake/dump")
 
     def test_start_all_edge_cases(self):
         self.dump_gradient_op_existed = False
-        cell_dump_process.dump_gradient_op_existed = self.dump_gradient_op_existed
+        cell_dump_with_insert_gradient.dump_gradient_op_existed = self.dump_gradient_op_existed
         start(self.mock_config)
 
         self.dump_gradient_op_existed = True
-        cell_dump_process.dump_gradient_op_existed = self.dump_gradient_op_existed
+        cell_dump_with_insert_gradient.dump_gradient_op_existed = self.dump_gradient_op_existed
         self._set_init_iter.assert_called()
 
         self.mock_config.net = None
         start(self.mock_config)
+        self.mock_atexit_register.assert_called()
         self.mock_config.net = (('', MagicMock(), MagicMock()),)
 
         self.graph_step_flag = False
-        cell_dump_process.graph_step_flag = self.graph_step_flag
+        cell_dump_with_insert_gradient.graph_step_flag = self.graph_step_flag
         with self.assertRaises(Exception) as ctx:
             start(self.mock_config)
         self.assertIn("Importing _set_init_iter failed", str(ctx.exception))
 
         self.graph_step_flag = True
-        cell_dump_process.graph_step_flag = self.graph_step_flag
+        cell_dump_with_insert_gradient.graph_step_flag = self.graph_step_flag
 
         self.mock_config.task = CoreConst.TENSOR
         start(self.mock_config)
         self.mocks[4].assert_called()
+        self.mock_atexit_register.assert_called_with(process, dump_path="/fake/dump")
 
         mock_cell = MagicMock()
         mock_cell.__class__.__name__ = f"{CoreConst.REPLACEMENT_CHARACTER}Linear"
@@ -125,187 +136,70 @@ class TestCellDumpStart(unittest.TestCase):
         logger.info.assert_not_called()
 
 
-class TestProcessStepCoverage(unittest.TestCase):
-    mock_create_directory = MagicMock()
-    mock_rename_filename = MagicMock()
-    mock_generate_construct = MagicMock()
-    mock_generate_dump_info = MagicMock()
-    mock_generate_stack_info = MagicMock()
-    mock_move_directory = MagicMock()
+class TestProcessStatisticsStep(unittest.TestCase):
+    """测试process_statistics_step函数"""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.mock_create_directory.reset_mock()
-        cls.mock_rename_filename.reset_mock()
-        cls.mock_generate_construct.reset_mock()
-        cls.mock_generate_dump_info.reset_mock()
-        cls.mock_generate_stack_info.reset_mock()
-        cls.mock_move_directory.reset_mock()
+    @patch('os.walk')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.merge_file')
+    def test_process_statistics_step_no_files(self, mock_merge, mock_walk):
+        mock_walk.return_value = [("/mock/path", [], [])]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            process_statistics(tmpdir)
+            mock_merge.assert_called()
 
-    def setUp(self):
-        self.mock_create_directory.reset_mock()
-        self.mock_rename_filename.reset_mock()
-        self.mock_generate_construct.reset_mock()
-        self.mock_generate_dump_info.reset_mock()
-        self.mock_generate_stack_info.reset_mock()
-        self.mock_move_directory.reset_mock()
-
-    @patch('os.path.exists', return_value=True)
-    @patch('os.environ.get', return_value=None)
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.is_download_finished', return_value=True)
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.create_directory',
-           new_callable=lambda: TestProcessStepCoverage.mock_create_directory)
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.rename_filename',
-           new_callable=lambda: TestProcessStepCoverage.mock_rename_filename)
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.generate_construct',
-           new_callable=lambda: TestProcessStepCoverage.mock_generate_construct)
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.generate_dump_info',
-           new_callable=lambda: TestProcessStepCoverage.mock_generate_dump_info)
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.generate_stack_info',
-           new_callable=lambda: TestProcessStepCoverage.mock_generate_stack_info)
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.move_directory',
-           new_callable=lambda: TestProcessStepCoverage.mock_move_directory)
-    def test_process_step_core_branch(self, mock_move, mock_stack, mock_dump_info, mock_construct,
-                                      mock_rename, mock_create, mock_is_finished, mock_env_get, mock_exists):
-        dump_path = "/fake/dump"
-        flag_path = "/fake/flag"
-        step = 100
-        step_list = [100, 200, 300]
-
-        process_step(dump_path, flag_path, step, step_list)
-
-        self.mock_rename_filename.assert_called()
-        self.mock_generate_construct.assert_called()
-        self.mock_move_directory.assert_called()
-
-    @patch('os.path.exists', side_effect=[False, True])
-    @patch('os.environ.get', return_value="0")
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.is_download_finished',
-           side_effect=[False, False, True])
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.create_directory',
-           new_callable=lambda: TestProcessStepCoverage.mock_create_directory)
-    @patch('time.time', side_effect=[0, TIMEOUT + 1])
-    def test_process_step_edge_branch(self, mock_time, mock_create, mock_is_finished, mock_env_get, mock_exists):
-        process_step("/fake/dump", "/fake/flag", 400, [100, 200, 300])
-
-        process_step("/fake/dump", "/fake/flag", 100, [100])
-        self.mock_create_directory.assert_called_once_with("/fake/dump")
-
-        mock_exists.reset_mock()
-        process_step("/fake/dump", "/fake/flag", 100, [100])
-        self.mock_move_directory.assert_not_called()
+    @patch('os.walk')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.merge_file')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.generate_construct')
+    def test_process_statistics_step_valid(self, mock_construct, mock_merge, mock_walk):
+        mock_walk.return_value = [("/mock/path/Net/step0", [], ["statistic.csv"])]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rank_dir = os.path.join(tmpdir, "rank_0", "Net")
+            os.makedirs(rank_dir)
+            process_statistics(tmpdir)
+            mock_merge.assert_called()
 
 
-class TestGetConstruct(unittest.TestCase):
+class TestProcessStep(unittest.TestCase):
+    """测试process函数"""
 
-    def setUp(self):
-        self.original_construct = construct.copy()
-        self.original_free_cells = free_cells.copy()
-        self.original_parent_cell_types = parent_cell_types.copy()
+    @patch('os.walk')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.merge_file')
+    def test_process_step_no_files(self, mock_merge, mock_walk):
+        mock_walk.return_value = [("/mock/path", [], [])]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            process(tmpdir)
+            mock_merge.assert_not_called()
 
-        construct.clear()
-        free_cells.clear()
-        parent_cell_types.clear()
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.generate_construct')
+    @patch('os.walk')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.merge_file')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.rename_filename')
+    def test_process_step_valid(self, mock_rename, mock_merge, mock_walk, mock_construct):
+        mock_walk.return_value = [("/mock/path/Net/step0", [], ["statistic.csv"])]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rank_dir = os.path.join(tmpdir, "rank_0", "Net")
+            os.makedirs(rank_dir)
+            process(tmpdir)
+            mock_rename.assert_called()
 
-        self.patcher_get_cell_name = patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.get_cell_name')
-        self.patcher_get_data_mode = patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.get_data_mode')
-        self.patcher_check_relation = patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.check_relation')
-        self.patcher_get_parent_cell_name = patch(
-            'msprobe.mindspore.dump.dump_processor.cell_dump_process.get_parent_cell_name')
 
-        self.mock_get_cell_name = self.patcher_get_cell_name.start()
-        self.mock_get_data_mode = self.patcher_get_data_mode.start()
-        self.mock_check_relation = self.patcher_check_relation.start()
-        self.mock_get_parent_cell_name = self.patcher_get_parent_cell_name.start()
+class TestMergeFile(unittest.TestCase):
+    """测试merge_file函数"""
 
-    def tearDown(self):
-        construct.clear()
-        construct.update(self.original_construct)
-        free_cells.clear()
-        free_cells.update(self.original_free_cells)
-        parent_cell_types.clear()
-        parent_cell_types.update(self.original_parent_cell_types)
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.read_csv')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.rename_filename')
+    def test_merge_file(self, mock_rename, mock_read):
+        """测试文件合并"""
+        mock_read.return_value = pd.DataFrame({
+            CoreConst.OP_NAME: ["dump_tensor_data/Cell-test-forward-input-0|123"],
+            "Timestamp": [1],
+            "Slot": [1]
+        })
 
-        patch.stopall()
-
-    def test_get_construct_found_parent_cell(self):
-        cell_list_input = ["cell1", "cell2"]
-        self.mock_get_cell_name.side_effect = lambda x: "cell1_name" if x == "cell1" else "cell2_name"
-        self.mock_get_data_mode.side_effect = lambda x: "forward" if x == "cell1" else "forward"
-        self.mock_check_relation.return_value = True
-
-        get_construct(cell_list_input)
-
-        self.assertEqual(construct["cell1"], "cell1")
-        self.assertEqual(construct["cell2"], "cell1")
-
-    def test_get_construct_free_cells_hit(self):
-        cell_list_input = ["cell1"]
-        self.mock_get_cell_name.return_value = "cell1_name"
-        self.mock_get_data_mode.return_value = "forward"
-        self.mock_check_relation.return_value = False
-
-        cell_name_with_mode = f"cell1_name{CoreConst.SEP}forward"
-        free_cells[cell_name_with_mode] = "cached_parent_cell"
-
-        get_construct(cell_list_input)
-
-        self.assertEqual(construct["cell1"], "cached_parent_cell")
-        self.mock_get_parent_cell_name.assert_not_called()
-
-    def test_get_construct_generate_parent_cell(self):
-        cell_list_input = ["cell1"]
-        cell1_full = "Cell.cell1_name.forward.0.input.0"
-        self.mock_get_cell_name.return_value = "cell1_name"
-        self.mock_get_data_mode.return_value = "forward"
-        self.mock_check_relation.return_value = False
-        self.mock_get_parent_cell_name.return_value = "parent_cell_name"
-
-        parent_cell_types["cell1_name"] = "ParentCellType"
-
-        get_construct([cell1_full])
-
-        expected_parent_cell = f"{CoreConst.CELL}{CoreConst.SEP}parent_cell_name{CoreConst.SEP}ParentCellType.input.0"
-        self.assertEqual(construct[cell1_full], expected_parent_cell)
-        cell_name_with_mode = f"cell1_name{CoreConst.SEP}forward"
-        self.assertEqual(free_cells[cell_name_with_mode], expected_parent_cell)
-
-    def test_get_construct_no_parent_cell(self):
-        cell_list_input = ["cell1"]
-        self.mock_get_cell_name.return_value = "cell1_name"
-        self.mock_get_data_mode.return_value = "forward"
-        self.mock_check_relation.return_value = False
-        self.mock_get_parent_cell_name.return_value = ""
-        parent_cell_types.clear()
-
-        get_construct(cell_list_input)
-
-        self.assertEqual(construct["cell1"], None)
-        self.mock_get_parent_cell_name.assert_called_with("cell1_name")
-
-    def test_get_construct_cell_name_empty(self):
-        cell_list_input = ["cell1"]
-        self.mock_get_cell_name.return_value = ""
-        self.mock_get_data_mode.return_value = "forward"
-        self.mock_check_relation.return_value = False
-
-        get_construct(cell_list_input)
-
-        self.assertEqual(construct["cell1"], None)
-        self.mock_get_parent_cell_name.assert_called_once()
-
-    def test_get_construct_parent_cell_name_none(self):
-        cell_list_input = ["cell1"]
-        self.mock_get_cell_name.return_value = "cell1_name"
-        self.mock_get_data_mode.return_value = "forward"
-        self.mock_check_relation.return_value = False
-        self.mock_get_parent_cell_name.return_value = None
-        parent_cell_types["cell1_name"] = "ParentCellType"
-
-        get_construct(cell_list_input)
-
-        self.assertEqual(construct["cell1"], None)
-        self.mock_get_parent_cell_name.assert_called_with("cell1_name")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_dict = {"0": [os.path.join(tmpdir, "statistic.csv")]}
+            merge_file(tmpdir, "rank_0", file_dict)
+            mock_rename.assert_not_called()
 
 
 class TestGenerateConstruct(unittest.TestCase):
@@ -321,9 +215,9 @@ class TestGenerateConstruct(unittest.TestCase):
         dump_task = self.original_dump_task
         patch.stopall()
 
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.read_csv')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.get_construct')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.save_json')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.read_csv')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.get_construct')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.save_json')
     def test_generate_construct_statistics(self, mock_save_json, mock_get_construct, mock_read_csv):
         global dump_task
         dump_task = CoreConst.STATISTICS
@@ -348,27 +242,26 @@ class TestNeedTensorDumpIn(unittest.TestCase):
         """测试存在属性且索引有效"""
         mock_cell = MagicMock()
         mock_cell.input_dump_mode = ["in", "out"]
-        self.assertTrue(need_tensordump_in(mock_cell, "input_dump_mode", 0))
-        self.assertFalse(need_tensordump_in(mock_cell, "input_dump_mode", 1))
+        self.assertFalse(need_tensordump_in(mock_cell, "input_dump_mode"))
 
     def test_need_tensordump_in_no_attr(self):
         """测试不存在属性"""
         mock_cell = MagicMock()
         del mock_cell.input_dump_mode
-        self.assertFalse(need_tensordump_in(mock_cell, "input_dump_mode", 0))
+        self.assertFalse(need_tensordump_in(mock_cell, "input_dump_mode"))
 
     def test_need_tensordump_in_index_out_of_range(self):
         """测试索引超出范围"""
         mock_cell = MagicMock()
         mock_cell.output_dump_mode = ["in"]
-        self.assertFalse(need_tensordump_in(mock_cell, "output_dump_mode", 1))
+        self.assertFalse(need_tensordump_in(mock_cell, "output_dump_mode"))
 
 
 class TestSortFilenamesExtended(unittest.TestCase):
     """补充sort_filenames的测试场景"""
 
     @patch('os.listdir')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.logger')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.logger')
     def test_sort_filenames_invalid_files(self, mock_logger, mock_listdir):
         """测试包含无效格式文件的场景"""
         mock_listdir.return_value = [
@@ -430,34 +323,12 @@ class TestGetDataMode(unittest.TestCase):
         self.assertEqual(get_data_mode(cell_str), "output")
 
 
-class TestGetParentCellName(unittest.TestCase):
-    """测试get_parent_cell_name函数"""
-
-    def setUp(self):
-        global KEY_LAYERS
-        KEY_LAYERS = "layers"
-
-    def test_get_parent_cell_name_layers_pattern(self):
-        """测试layers模式"""
-        cell_name = "network.model.layers.0"
-        self.assertEqual(get_parent_cell_name(cell_name), "network.model")
-
-    def test_get_parent_cell_name_normal(self):
-        """测试普通模式"""
-        cell_name = "network.model.layer1"
-        self.assertEqual(get_parent_cell_name(cell_name), "network.model")
-
-    def test_get_parent_cell_name_no_dot(self):
-        """测试无分隔符"""
-        self.assertEqual(get_parent_cell_name("network"), "")
-
-
 class TestProcessFile(unittest.TestCase):
     """测试process_file函数"""
 
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.load_npy')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.move_file')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.logger')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.load_npy')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.move_file')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.logger')
     def test_process_file_valid(self, mock_logger, mock_move_file, mock_load_npy):
         """测试有效文件处理"""
         mock_npy = MagicMock()
@@ -478,7 +349,7 @@ class TestProcessFile(unittest.TestCase):
             self.assertEqual(result[1], CoreConst.INPUT_ARGS)
             self.assertEqual(result[2][CoreConst.SHAPE], [2, 3])
 
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.logger')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.logger')
     def test_process_file_exception(self, mock_logger):
         """测试文件处理异常"""
         result = process_file("/invalid/path.npy")
@@ -511,60 +382,13 @@ class TestIsDownloadFinished(unittest.TestCase):
     def test_is_download_finished_not_exists(self, mock_listdir):
         """测试标志文件不存在"""
         mock_listdir.return_value = ["other_file"]
-        self.assertFalse(is_download_finished("/mock/path", "step_0"))
+        self.assertEquals(is_download_finished("/mock/path", "step_0"), (False, False))
 
     @patch('os.path.exists')
     def test_is_download_finished_dir_not_exists(self, mock_exists):
         """测试目录不存在"""
         mock_exists.return_value = False
-        self.assertFalse(is_download_finished("/invalid/path", "step_0"))
-
-
-class TestMergeFile(unittest.TestCase):
-    """测试merge_file函数"""
-
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.remove_trailing_commas')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.read_csv')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.rename_filename')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.write_df_to_csv')
-    def test_merge_file(self, mock_write, mock_rename, mock_read, mock_remove):
-        """测试文件合并"""
-        mock_read.return_value = pd.DataFrame({
-            CoreConst.OP_NAME: ["dump_tensor_data/Cell-test-forward-input-0|123"],
-            "Timestamp": [1],
-            "Slot": [1]
-        })
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            file_dict = {"0": [os.path.join(tmpdir, "statistic.csv")]}
-            merge_file(tmpdir, "rank_0", file_dict)
-            mock_rename.assert_called()
-            mock_write.assert_called()
-
-
-class TestProcessStatisticsStep(unittest.TestCase):
-    """测试process_statistics_step函数"""
-
-    @patch('os.walk')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.merge_file')
-    def test_process_statistics_step_no_files(self, mock_merge, mock_walk):
-        """测试无csv文件场景"""
-        mock_walk.return_value = [("/mock/path", [], [])]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            process_statistics_step(tmpdir, 0, [])
-            mock_merge.assert_not_called()
-
-    @patch('os.walk')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.merge_file')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.generate_construct')
-    def test_process_statistics_step_valid(self, mock_construct, mock_merge, mock_walk):
-        """测试有效场景"""
-        mock_walk.return_value = [("/mock/path/Net/step0", [], ["statistic.csv"])]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            rank_dir = os.path.join(tmpdir, "rank_0", "Net")
-            os.makedirs(rank_dir)
-            process_statistics_step(tmpdir, 0, [])
-            mock_merge.assert_called()
+        self.assertEquals(is_download_finished("/invalid/path", "step_0"), (False, False))
 
 
 class TestHelperFunctions(unittest.TestCase):
@@ -579,24 +403,19 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertEqual(get_tensordump_mode("([in, out], [in])"), ('[in', 'out]'))
         self.assertEqual(get_tensordump_mode("invalid"), (None, None))
 
-    def test_str_to_list(self):
-        """测试str_to_list"""
-        self.assertEqual(str_to_list("[in, out]"), ["in", "out"])
-        self.assertEqual(str_to_list(""), [''])
-
     def test_set_tensordump_mode(self):
         """测试set_tensordump_mode"""
         mock_cell = MagicMock()
         set_tensordump_mode(mock_cell, "([in], [out])")
-        self.assertEqual(mock_cell.input_dump_mode, ["in"])
-        self.assertEqual(mock_cell.output_dump_mode, ["out"])
+        self.assertEqual(mock_cell.input_dump_mode, '[in]')
+        self.assertEqual(mock_cell.output_dump_mode, '[out]')
 
 
 class TestCreateKbykJsonExtended(unittest.TestCase):
     """补充create_kbyk_json测试"""
 
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.create_directory')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.save_json')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.create_directory')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.save_json')
     def test_create_kbyk_json_summary_mode_mean(self, mock_save, mock_create):
         """测试summary_mode包含mean"""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -605,8 +424,8 @@ class TestCreateKbykJsonExtended(unittest.TestCase):
             args = mock_save.call_args[0][1]
             self.assertEqual(args["common_dump_settings"]["statistic_category"], ["avg", "max"])
 
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.create_directory')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.save_json')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.create_directory')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.save_json')
     def test_create_kbyk_json_statistics(self, mock_save, mock_create):
         """测试summary_mode为statistics"""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -620,18 +439,17 @@ class TestGenerateStackInfo(unittest.TestCase):
 
     def test_generate_stack_info_path_not_exists(self):
         """测试路径不存在"""
-        with patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.logger') as mock_logger:
+        with patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.logger') as mock_logger:
             generate_stack_info("/invalid/path")
             mock_logger.error.assert_called()
 
 
 class TestCellWrapperProcess(unittest.TestCase):
 
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.ops.is_tensor')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.td')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.td_in')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.ops.is_tensor')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.td')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.td_in')
     def test_cell_construct_wrapper(self, mock_td_in, mock_td, mock_istensor):
-
         # Mock the TensorDump operations
         mock_td.return_value = MagicMock()
         mock_td_in.return_value = MagicMock()
@@ -661,9 +479,9 @@ class TestCellWrapperProcess(unittest.TestCase):
         mock_td_in.assert_not_called()
         mock_td.assert_not_called()
 
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.ops.is_tensor')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.td')
-    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_process.td_in')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.ops.is_tensor')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.td')
+    @patch('msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.td_in')
     def test_cell_construct_wrapper_not_tuple(self, mock_td_in, mock_td, mock_istensor):
         mock_td.return_value = MagicMock()
         mock_td_in.return_value = MagicMock()
@@ -746,16 +564,16 @@ class TestCheckRelation(unittest.TestCase):
 
 class TestRenameFilename(unittest.TestCase):
     def setUp(self):
-        self.logger_patcher = patch.object(cell_dump_process, "logger", MagicMock())
+        self.logger_patcher = patch.object(cell_dump_with_insert_gradient, "logger", MagicMock())
         self.logger_patcher.start()
 
     def tearDown(self):
         self.logger_patcher.stop()
 
-    @patch.object(cell_dump_process, "sort_filenames")
-    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_process.move_file")
+    @patch.object(cell_dump_with_insert_gradient, "sort_filenames")
+    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.move_file")
     def test_rename_filename_tensor(self, mock_move_file, mock_sort_filenames):
-        cell_dump_process.dump_task = CoreConst.TENSOR
+        cell_dump_with_insert_gradient.dump_task = CoreConst.TENSOR
 
         with tempfile.TemporaryDirectory() as tmpdir:
             filenames = [
@@ -774,11 +592,13 @@ class TestRenameFilename(unittest.TestCase):
             mock_sort_filenames.return_value = filenames
 
             rename_calls = []
+
             def fake_rename(src, dst):
                 rename_calls.append((os.path.basename(src), os.path.basename(dst)))
+
             mock_move_file.side_effect = fake_rename
 
-            cell_dump_process.rename_filename(path=tmpdir)
+            cell_dump_with_insert_gradient.rename_filename(path=tmpdir)
 
             expected = [
                 ("Cell.a.b.c.X.forward.input.0_float32_1.npy", "Cell.a.b.c.X.forward.0.input.0_float32_1.npy"),
@@ -791,9 +611,9 @@ class TestRenameFilename(unittest.TestCase):
             ]
             self.assertEqual(rename_calls, expected)
 
-    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_process.move_file")
+    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.move_file")
     def test_rename_filename_statistics(self, mock_move_file):
-        cell_dump_process.dump_task = CoreConst.STATISTICS
+        cell_dump_with_insert_gradient.dump_task = CoreConst.STATISTICS
 
         data = {
             'Op Name': [
@@ -808,7 +628,7 @@ class TestRenameFilename(unittest.TestCase):
         }
         df = pd.DataFrame(data)
 
-        cell_dump_process.rename_filename(data_df=df)
+        cell_dump_with_insert_gradient.rename_filename(data_df=df)
 
         self.assertEqual(df['Op Name'].iloc[0], "Cell.a.b.c.X.forward.0.input.0")
         self.assertEqual(df['Op Name'].iloc[1], "Cell.a.b.c.X.forward.0.input.1")
@@ -846,7 +666,7 @@ class TestProcessCsv(unittest.TestCase):
         import pandas as pd
         return pd.DataFrame(rows)
 
-    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_process.read_csv")
+    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.read_csv")
     def test_process_csv_input_and_output(self, mock_read_csv):
         rows = [
             {
@@ -893,7 +713,7 @@ class TestProcessCsv(unittest.TestCase):
         self.assertEqual(tensor_json[CoreConst.MEAN], 0.0)
         self.assertEqual(tensor_json[CoreConst.NORM], 3.0)
 
-    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_process.read_csv")
+    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.read_csv")
     def test_process_csv_handles_missing_columns(self, mock_read_csv):
         rows = [
             {
@@ -911,7 +731,7 @@ class TestProcessCsv(unittest.TestCase):
         self.assertEqual(tensor_json[CoreConst.DTYPE], str(np_ms_dtype_dict['int32']))
         self.assertEqual(tensor_json[CoreConst.SHAPE], [1])
 
-    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_process.read_csv")
+    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.read_csv")
     def test_process_csv_handles_unknown_io_key(self, mock_read_csv):
         rows = [
             {
@@ -930,7 +750,7 @@ class TestProcessCsv(unittest.TestCase):
         self.assertIsNone(key)
         self.assertIsNone(tensor_json)
 
-    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_process.read_csv")
+    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.read_csv")
     def test_process_csv_shape_parsing(self, mock_read_csv):
         rows = [
             {
@@ -945,7 +765,7 @@ class TestProcessCsv(unittest.TestCase):
         result = process_csv("dummy_path")
         self.assertEqual(result[0][2][CoreConst.SHAPE], [4, 5, 6])
 
-    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_process.read_csv")
+    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.read_csv")
     def test_process_csv_convert_special_values_bool_and_nan(self, mock_read_csv):
         rows = [
             {
@@ -970,13 +790,13 @@ class TestProcessCsv(unittest.TestCase):
 
 
 class TestCreateKbykJsonMultiRank(unittest.TestCase):
-    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_process.create_directory", lambda path: None)
+    @patch("msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.create_directory", lambda path: None)
     @patch(
-        "msprobe.mindspore.dump.dump_processor.cell_dump_process.save_json",
+        "msprobe.mindspore.dump.dump_processor.cell_dump_with_insert_gradient.save_json",
         lambda path, data, indent=4: open(path, "w").write("test")
     )
     def test_create_kbyk_json_multi_rank(self):
-        
+
         test_cases = [
             (None, "0kernel_kbyk_dump.json"),
             ("1", "1kernel_kbyk_dump.json"),
