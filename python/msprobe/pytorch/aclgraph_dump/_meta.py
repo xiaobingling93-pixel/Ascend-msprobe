@@ -14,17 +14,13 @@
 # See the Mulan PSL v2 for more details.
 # -------------------------------------------------------------------------
 
+
 import torch
 
-from msprobe.pytorch.dump.debugger.precision_debugger import PrecisionDebugger, module_dump, module_dump_end
-from .common.utils import seed_all
-from .torchair_dump import set_fx_dump_config, set_ge_dump_config
-
-torch_version_above_or_equal_2 = torch.__version__.split('+')[0] >= '2.0'
-if torch_version_above_or_equal_2:
-    from msprobe.pytorch.monitor.module_hook import TrainerMon
-
-try:
-    from msprobe.pytorch.aclgraph_dump import acl_save  # noqa: F401
-except Exception:
-    acl_save = None
+def _register_meta():
+    try:
+        @torch.library.register_fake("my_ns.acl_save")
+        def _fake_acl_save(x: torch.Tensor, path: str):
+            return torch.empty_strided(x.size(), x.stride(), dtype=x.dtype, device="meta")
+    except Exception:
+        pass
